@@ -1,0 +1,22 @@
+# AWS CloudFormation template for System Grounding infrastructure (DynamoDB single-table, Lambda functions, IAM roles)
+AWSTemplateFormatVersion: '2010-09-09'
+Description: System Grounding - DynamoDB single-table design with Lambda triggers
+
+Resources:
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: system-grounding-state
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
