@@ -1,10 +1,8 @@
 ```
-# Dependencies
-node_modules/
-
 # Logs and temp files
 *.log
 *.tmp
+*.swp
 
 # Environment
 .env
@@ -15,28 +13,37 @@ node_modules/
 .vscode/
 .idea/
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
+# Dependencies
+node_modules/
 .venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git/modules/
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+dist/
+build/
+target/
+.gradle/
+
+# Compiled files
+*.pyc
+*.class
+*.o
+*.exe
+*.dll
+*.so
+*.a
+*.obj
+*.out
+
+# System files
 .DS_Store
-*.swp
-*.swo
-*~
+Thumbs.db
+coverage/
+htmlcov/
+*.tar*
+*.zip
+*.gz
+*.rar
+*.7z
 ```
