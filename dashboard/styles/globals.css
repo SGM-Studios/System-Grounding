@@ -1,0 +1,7 @@
+/* Global styles for System Grounding dashboard */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: #f5f5f5;
+}
