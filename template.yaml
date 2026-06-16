@@ -2,15 +2,34 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: System Grounding - DynamoDB single-table design with Lambda triggers
 
+Parameters:
+  ChangeRecordTTLDays:
+    Type: Number
+    Default: 30
+    Description: TTL in days for change records
+
+  VercelDashboardUser:
+    Type: String
+    Default: vercel-dashboard
+    Description: IAM username for the Vercel app
+
 Resources:
-  StateTable:
+  SystemStateTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: system-grounding-state
+      TableName: SystemState
       AttributeDefinitions:
         - AttributeName: PK
           AttributeType: S
         - AttributeName: SK
+          AttributeType: S
+        - AttributeName: recordType
+          AttributeType: S
+        - AttributeName: lastCollected
+          AttributeType: S
+        - AttributeName: changeDevice
+          AttributeType: S
+        - AttributeName: changeTimestamp
           AttributeType: S
       KeySchema:
         - AttributeName: PK
@@ -20,3 +39,386 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       StreamSpecification:
         StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      GlobalSecondaryIndexes:
+        - IndexName: StalenessIndex
+          KeySchema:
+            - AttributeName: recordType
+              KeyType: HASH
+            - AttributeName: lastCollected
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: ChangeIndex
+          KeySchema:
+            - AttributeName: changeDevice
+              KeyType: HASH
+            - AttributeName: changeTimestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  DiffProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt SystemStateTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:DescribeStream
+                  - dynamodb:ListStreams
+                Resource: !GetAtt SystemStateTable.StreamArn
+
+  DiffProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs20.x
+      Timeout: 15
+      Role: !GetAtt DiffProcessorRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SystemStateTable
+          TTL_DAYS: !Ref ChangeRecordTTLDays
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const client = new DynamoDBClient({});
+          const docClient = DynamoDBDocumentClient.from(client);
+
+          function computeDiff(oldObj, newObj) {
+            const diff = {};
+            const allKeys = new Set([...Object.keys(oldObj || {}), ...Object.keys(newObj || {})]);
+            for (const key of allKeys) {
+              if (JSON.stringify(oldObj?.[key]) !== JSON.stringify(newObj?.[key])) {
+                diff[key] = { old: oldObj?.[key], new: newObj?.[key] };
+              }
+            }
+            return diff;
+          }
+
+          exports.handler = async (event) => {
+            const batchItemFailures = [];
+            const ttlDays = parseInt(process.env.TTL_DAYS) || 30;
+            const now = Date.now();
+            const ttl = Math.floor(now / 1000) + (ttlDays * 86400);
+
+            for (const record of event.Records) {
+              try {
+                const eventName = record.eventName;
+                const streamRecord = record.dynamodb;
+
+                if (eventName === 'REMOVE') {
+                  const oldImage = streamRecord.OldImage;
+                  if (!oldImage) continue;
+
+                  const deviceId = oldImage.deviceId;
+                  const recordType = oldImage.recordType;
+                  const id = oldImage.id;
+                  const timestamp = new Date().toISOString();
+
+                  await docClient.send(new PutCommand({
+                    TableName: process.env.TABLE_NAME,
+                    Item: {
+                      PK: `CHANGE#${deviceId}`,
+                      SK: `${timestamp}#DELETE#TYPE#${recordType}#${id}`,
+                      changeType: 'DELETE',
+                      recordType: recordType,
+                      deviceId: deviceId,
+                      changeDevice: deviceId,
+                      changeTimestamp: timestamp,
+                      oldSnapshot: oldImage.data || oldImage,
+                      ttl: ttl
+                    }
+                  }));
+                } else if (eventName === 'INSERT' || eventName === 'MODIFY') {
+                  const newImage = streamRecord.NewImage;
+                  const oldImage = streamRecord.OldImage;
+                  if (!newImage) continue;
+
+                  const deviceId = newImage.deviceId;
+                  const recordType = newImage.recordType;
+                  const id = newImage.id;
+                  const timestamp = new Date().toISOString();
+
+                  const diff = computeDiff(oldImage?.data || oldImage, newImage.data || newImage);
+
+                  await docClient.send(new PutCommand({
+                    TableName: process.env.TABLE_NAME,
+                    Item: {
+                      PK: `CHANGE#${deviceId}`,
+                      SK: `${timestamp}#${eventName}#TYPE#${recordType}#${id}`,
+                      changeType: eventName,
+                      recordType: recordType,
+                      deviceId: deviceId,
+                      changeDevice: deviceId,
+                      changeTimestamp: timestamp,
+                      diff: diff,
+                      oldSnapshot: oldImage?.data || oldImage,
+                      newSnapshot: newImage.data || newImage,
+                      ttl: ttl
+                    }
+                  }));
+                }
+              } catch (error) {
+                console.error('Error processing record:', record.eventID, error);
+                batchItemFailures.push({ itemIdentifier: record.eventID });
+              }
+            }
+
+            return { batchItemFailures };
+          };
+
+  DiffProcessorEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt SystemStateTable.StreamArn
+      FunctionName: !GetAtt DiffProcessorFunction.Arn
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 10
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  IngestApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBIngestPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt SystemStateTable.Arn
+
+  IngestApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs20.x
+      Timeout: 10
+      Role: !GetAtt IngestApiRole.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SystemStateTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const client = new DynamoDBClient({});
+          const docClient = DynamoDBDocumentClient.from(client);
+
+          exports.handler = async (event) => {
+            const corsHeaders = {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Methods': 'POST, OPTIONS'
+            };
+
+            if (event.httpMethod === 'OPTIONS') {
+              return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: ''
+              };
+            }
+
+            try {
+              const body = JSON.parse(event.body);
+              const { deviceId, records } = body;
+
+              if (!deviceId || !Array.isArray(records)) {
+                return {
+                  statusCode: 400,
+                  headers: corsHeaders,
+                  body: JSON.stringify({ error: 'Invalid request. Requires deviceId and records array.' })
+                };
+              }
+
+              const now = Math.floor(Date.now() / 1000);
+              const results = [];
+
+              for (const record of records) {
+                const { recordType, id, data, stalenessThresholdSeconds } = record;
+                const ttl = now + (stalenessThresholdSeconds || 86400);
+
+                await docClient.send(new PutCommand({
+                  TableName: process.env.TABLE_NAME,
+                  Item: {
+                    PK: `DEVICE#${deviceId}`,
+                    SK: `TYPE#${recordType}#${id}`,
+                    recordType: recordType,
+                    deviceId: deviceId,
+                    id: id,
+                    data: data,
+                    lastCollected: new Date().toISOString(),
+                    ttl: ttl
+                  }
+                }));
+
+                results.push({ recordType, id, status: 'success' });
+              }
+
+              return {
+                statusCode: 200,
+                headers: corsHeaders,
+                body: JSON.stringify({ success: true, results })
+              };
+            } catch (error) {
+              console.error('Error ingesting records:', error);
+              return {
+                statusCode: 500,
+                headers: corsHeaders,
+                body: JSON.stringify({ error: 'Internal server error', message: error.message })
+              };
+            }
+          };
+
+  IngestApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt IngestApiFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${IngestApi}/*
+
+  IngestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: IngestApi
+      Description: API for ingesting system state records
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  IngestApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref IngestApi
+      ParentId: !GetAtt IngestApi.RootResourceId
+      PathPart: ingest
+
+  IngestApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref IngestApi
+      ResourceId: !Ref IngestApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IngestApiFunction.Arn}/invocations
+
+  IngestApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref IngestApi
+      ResourceId: !Ref IngestApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Methods: "'POST, OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  IngestApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref IngestApi
+      StageName: prod
+
+  VercelDashboardIAMUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref VercelDashboardUser
+      Policies:
+        - PolicyName: DynamoDBLeastPrivilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:BatchGetItem
+                Resource: !GetAtt SystemStateTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !Sub ${SystemStateTable.Arn}/index/StalenessIndex
+                  - !Sub ${SystemStateTable.Arn}/index/ChangeIndex
+              - Effect: Deny
+                Action:
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                Resource: !GetAtt SystemStateTable.Arn
+
+  VercelDashboardAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref VercelDashboardIAMUser
+
+Outputs:
+  TableName:
+    Description: The name of the DynamoDB table
+    Value: !Ref SystemStateTable
+
+  IngestApiUrl:
+    Description: The URL for the ingestion API endpoint
+    Value: !Sub https://${IngestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/ingest
+
+  VercelAccessKeyId:
+    Description: Access Key ID for Vercel Dashboard IAM user
+    Value: !Ref VercelDashboardAccessKey
+
+  VercelSecretAccessKey:
+    Description: Secret Access Key for Vercel Dashboard IAM user
+    Value: !GetAtt VercelDashboardAccessKey.SecretAccessKey
