@@ -1,19 +1,12 @@
-```gitignore
-# Compiled and binary files
-*.pyc
-__pycache__/
-
+```
 # Dependencies
-.venv/
-venv/
 node_modules/
 
-# Logs and temporary files
+# Logs and temp files
 *.log
 *.tmp
-*.swp
 
-# Environment variables
+# Environment
 .env
 .env.local
 *.env.*
@@ -22,29 +15,28 @@ node_modules/
 .vscode/
 .idea/
 
-# Coverage reports
-.coverage
-coverage/
-htmlcov/
-
-# Build directories
-dist/
-build/
-target/
-
-# Python specific
+# Python
+__pycache__/
+*.pyc
 *.pyo
 *.pyd
-*.so
-*.egg-info/
-
-# MyPy cache
-.mypy_cache/
-
-# Pytest cache
-.pytest_cache/
-
-# OS generated files
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/modules/
 .DS_Store
-Thumbs.db
+*.swp
+*.swo
+*~
 ```
