@@ -251,8 +251,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--api-url",
-        required=True,
-        help="URL of the ingestion API endpoint",
+        required=False,
+        default=None,
+        help="URL of the ingestion API endpoint (not required with --dry-run)",
     )
     parser.add_argument(
         "--interval",
@@ -260,12 +261,25 @@ def main() -> None:
         default=60,
         help="Collection interval in seconds (default: 60)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print collected records instead of sending to API",
+    )
 
     args = parser.parse_args()
 
+    # Validate arguments
+    if not args.dry_run and not args.api_url:
+        print("Error: --api-url is required unless --dry-run is specified", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Starting agent for device: {args.device_id}")
-    print(f"API URL: {args.api_url}")
-    print(f"Interval: {args.interval} seconds")
+    if args.dry_run:
+        print("Mode: DRY-RUN (will print records instead of sending)")
+    else:
+        print(f"API URL: {args.api_url}")
+        print(f"Interval: {args.interval} seconds")
 
     while True:
         try:
@@ -286,8 +300,17 @@ def main() -> None:
 
             print(f"Collected {len(all_records)} total records")
 
-            # Send batch to API
-            if all_records:
+            if args.dry_run:
+                # Print collected records as JSON
+                print("\n=== DRY-RUN OUTPUT ===")
+                import json
+                print(json.dumps({
+                    "deviceId": args.device_id,
+                    "records": all_records
+                }, indent=2))
+                print("=== END DRY-RUN ===\n")
+            elif all_records:
+                # Send batch to API
                 send_batch(args.api_url, args.device_id, all_records)
             else:
                 print("No records to send")
@@ -297,6 +320,10 @@ def main() -> None:
             break
         except Exception as e:
             print(f"Error during collection: {e}", file=sys.stderr)
+
+        # If dry-run, exit after one iteration
+        if args.dry_run:
+            break
 
         # Wait for next interval
         time.sleep(args.interval)
