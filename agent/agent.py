@@ -22,6 +22,8 @@ ENV_DENYLIST_PATTERNS = [
     r"SECRET",
     r"TOKEN",
     r"PASSWORD",
+    r"API_KEY",
+    r"INGEST_API_KEY",
     r"AWS_",
     r"GITHUB_",
     r"NPM_TOKEN",
