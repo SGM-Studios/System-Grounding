@@ -290,6 +290,14 @@ def main() -> None:
         print("Error: --api-url is required unless --dry-run is specified", file=sys.stderr)
         sys.exit(1)
 
+    ingest_key = args.api_key or os.environ.get("INGEST_API_KEY") or os.environ.get("API_KEY")
+    if not args.dry_run and not ingest_key:
+        print(
+            "Error: --api-key (or INGEST_API_KEY / API_KEY) is required for authenticated ingest",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print(f"Starting agent for device: {args.device_id}")
     if args.dry_run:
         print("Mode: DRY-RUN (will print records instead of sending)")
@@ -327,7 +335,7 @@ def main() -> None:
                 print("=== END DRY-RUN ===\n")
             elif all_records:
                 # Send batch to API
-                send_batch(args.api_url, args.device_id, all_records, api_key=args.api_key)
+                send_batch(args.api_url, args.device_id, all_records, api_key=ingest_key)
             else:
                 print("No records to send")
 
