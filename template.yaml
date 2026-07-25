@@ -376,19 +376,13 @@ Resources:
       - IngestApiOptionsMethod
     Properties:
       RestApiId: !Ref IngestApi
-      # Changing Description forces a new deployment so stage picks up ApiKeyRequired.
+      # Bump Description to force a new deployment into the existing prod stage.
       Description: api-key-required-on-ingest-post-2026-07-23
-
-  IngestApiStage:
-    Type: AWS::ApiGateway::Stage
-    Properties:
-      RestApiId: !Ref IngestApi
-      DeploymentId: !Ref IngestApiDeployment
       StageName: prod
 
   IngestApiKey:
     Type: AWS::ApiGateway::ApiKey
-    DependsOn: IngestApiStage
+    DependsOn: IngestApiDeployment
     Properties:
       Name: !Sub ${AWS::StackName}-ingest-key
       Description: Required x-api-key for POST /ingest
@@ -399,7 +393,7 @@ Resources:
 
   IngestUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
-    DependsOn: IngestApiStage
+    DependsOn: IngestApiDeployment
     Properties:
       UsagePlanName: !Sub ${AWS::StackName}-ingest-plan
       Description: Usage plan for authenticated system-state ingest
