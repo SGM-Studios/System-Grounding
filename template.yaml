@@ -92,7 +92,8 @@ Resources:
   DiffProcessorFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
+      Handler: index.handler
       Timeout: 15
       Role: !GetAtt DiffProcessorRole.Arn
       Environment:
@@ -226,7 +227,8 @@ Resources:
   IngestApiFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
+      Handler: index.handler
       Timeout: 10
       Role: !GetAtt IngestApiRole.Arn
       Environment:
@@ -374,11 +376,19 @@ Resources:
       - IngestApiOptionsMethod
     Properties:
       RestApiId: !Ref IngestApi
+      # Changing Description forces a new deployment so stage picks up ApiKeyRequired.
+      Description: api-key-required-on-ingest-post-2026-07-23
+
+  IngestApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref IngestApi
+      DeploymentId: !Ref IngestApiDeployment
       StageName: prod
 
   IngestApiKey:
     Type: AWS::ApiGateway::ApiKey
-    DependsOn: IngestApiDeployment
+    DependsOn: IngestApiStage
     Properties:
       Name: !Sub ${AWS::StackName}-ingest-key
       Description: Required x-api-key for POST /ingest
@@ -389,7 +399,7 @@ Resources:
 
   IngestUsagePlan:
     Type: AWS::ApiGateway::UsagePlan
-    DependsOn: IngestApiDeployment
+    DependsOn: IngestApiStage
     Properties:
       UsagePlanName: !Sub ${AWS::StackName}-ingest-plan
       Description: Usage plan for authenticated system-state ingest
