@@ -170,17 +170,6 @@ all_records.extend(collect_services())
 { keywords: /service|systemd/i, types: ['SERVICE'] },
 ```
 
-## Demo Walkthrough
-
-See [`demo-script.md`](./demo-script.md) for the full adversarial demo script.
-
-**Summary:**
-1. **Hallucination (0:00–0:30)**: AI guesses React version without grounding
-2. **Grounded Fix (0:30–1:00)**: Same query returns verified version from DynamoDB
-3. **Boundary Awareness (1:00–1:30)**: Confidence drops when data is stale/missing
-4. **Live Change Detection (1:30–2:00)**: Dashboard shows real-time diff tracking
-5. **MCP Reveal (2:00–2:30)**: Cursor IDE uses MCP server for grounded responses
-
 > **Note**: The LLM answer in the demo is simulated. In production, replace the simulated response in `dashboard/pages/api/ask.js` with an actual LLM API call (e.g., Anthropic, OpenAI) that receives the verified context.
 
 ## Tech Stack
