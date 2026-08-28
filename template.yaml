@@ -92,7 +92,8 @@ Resources:
   DiffProcessorFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
+      Handler: index.handler
       Timeout: 15
       Role: !GetAtt DiffProcessorRole.Arn
       Environment:
@@ -226,7 +227,8 @@ Resources:
   IngestApiFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
+      Handler: index.handler
       Timeout: 10
       Role: !GetAtt IngestApiRole.Arn
       Environment:
@@ -243,7 +245,7 @@ Resources:
           exports.handler = async (event) => {
             const corsHeaders = {
               'Access-Control-Allow-Origin': '*',
-              'Access-Control-Allow-Headers': 'Content-Type',
+              'Access-Control-Allow-Headers': 'Content-Type, x-api-key',
               'Access-Control-Allow-Methods': 'POST, OPTIONS'
             };
 
@@ -337,6 +339,7 @@ Resources:
       ResourceId: !Ref IngestApiResource
       HttpMethod: POST
       AuthorizationType: NONE
+      ApiKeyRequired: true
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -354,7 +357,7 @@ Resources:
         IntegrationResponses:
           - StatusCode: 200
             ResponseParameters:
-              method.response.header.Access-Control-Allow-Headers: "'Content-Type'"
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,x-api-key'"
               method.response.header.Access-Control-Allow-Methods: "'POST, OPTIONS'"
               method.response.header.Access-Control-Allow-Origin: "'*'"
         RequestTemplates:
@@ -368,9 +371,42 @@ Resources:
 
   IngestApiDeployment:
     Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - IngestApiMethod
+      - IngestApiOptionsMethod
     Properties:
       RestApiId: !Ref IngestApi
+      # Bump Description to force a new deployment into the existing prod stage.
+      Description: api-key-required-on-ingest-post-2026-07-23
       StageName: prod
+
+  IngestApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: IngestApiDeployment
+    Properties:
+      Name: !Sub ${AWS::StackName}-ingest-key
+      Description: Required x-api-key for POST /ingest
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref IngestApi
+          StageName: prod
+
+  IngestUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: IngestApiDeployment
+    Properties:
+      UsagePlanName: !Sub ${AWS::StackName}-ingest-plan
+      Description: Usage plan for authenticated system-state ingest
+      ApiStages:
+        - ApiId: !Ref IngestApi
+          Stage: prod
+
+  IngestUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref IngestApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref IngestUsagePlan
 
   VercelDashboardIAMUser:
     Type: AWS::IAM::User
@@ -414,6 +450,10 @@ Outputs:
   IngestApiUrl:
     Description: The URL for the ingestion API endpoint
     Value: !Sub https://${IngestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/ingest
+
+  IngestApiKeyId:
+    Description: API Gateway key ID for ingest (retrieve value via Console or aws apigateway get-api-key --include-value)
+    Value: !Ref IngestApiKey
 
   VercelAccessKeyId:
     Description: Access Key ID for Vercel Dashboard IAM user

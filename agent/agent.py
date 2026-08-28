@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import requests
 import yaml
@@ -22,6 +22,8 @@ ENV_DENYLIST_PATTERNS = [
     r"SECRET",
     r"TOKEN",
     r"PASSWORD",
+    r"API_KEY",
+    r"INGEST_API_KEY",
     r"AWS_",
     r"GITHUB_",
     r"NPM_TOKEN",
@@ -214,7 +216,12 @@ def collect_services() -> list[dict[str, Any]]:
     return records
 
 
-def send_batch(api_url: str, device_id: str, records: list[dict[str, Any]]) -> bool:
+def send_batch(
+    api_url: str,
+    device_id: str,
+    records: list[dict[str, Any]],
+    api_key: Optional[str] = None,
+) -> bool:
     """
     Send a batch of records to the ingestion API.
     Returns True on success, False on failure.
@@ -224,11 +231,16 @@ def send_batch(api_url: str, device_id: str, records: list[dict[str, Any]]) -> b
         "records": records,
     }
 
+    headers = {"Content-Type": "application/json"}
+    key = api_key or os.environ.get("INGEST_API_KEY") or os.environ.get("API_KEY")
+    if key:
+        headers["x-api-key"] = key
+
     try:
         response = requests.post(
             api_url,
             json=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             timeout=30,
         )
         response.raise_for_status()
@@ -251,8 +263,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--api-url",
-        required=True,
-        help="URL of the ingestion API endpoint",
+        required=False,
+        default=None,
+        help="URL of the ingestion API endpoint (not required with --dry-run)",
+    )
+    parser.add_argument(
+        "--api-key",
+        required=False,
+        default=None,
+        help="API Gateway x-api-key (or set INGEST_API_KEY / API_KEY)",
     )
     parser.add_argument(
         "--interval",
@@ -260,12 +279,33 @@ def main() -> None:
         default=60,
         help="Collection interval in seconds (default: 60)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print collected records instead of sending to API",
+    )
 
     args = parser.parse_args()
 
+    # Validate arguments
+    if not args.dry_run and not args.api_url:
+        print("Error: --api-url is required unless --dry-run is specified", file=sys.stderr)
+        sys.exit(1)
+
+    ingest_key = args.api_key or os.environ.get("INGEST_API_KEY") or os.environ.get("API_KEY")
+    if not args.dry_run and not ingest_key:
+        print(
+            "Error: --api-key (or INGEST_API_KEY / API_KEY) is required for authenticated ingest",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print(f"Starting agent for device: {args.device_id}")
-    print(f"API URL: {args.api_url}")
-    print(f"Interval: {args.interval} seconds")
+    if args.dry_run:
+        print("Mode: DRY-RUN (will print records instead of sending)")
+    else:
+        print(f"API URL: {args.api_url}")
+        print(f"Interval: {args.interval} seconds")
 
     while True:
         try:
@@ -286,9 +326,18 @@ def main() -> None:
 
             print(f"Collected {len(all_records)} total records")
 
-            # Send batch to API
-            if all_records:
-                send_batch(args.api_url, args.device_id, all_records)
+            if args.dry_run:
+                # Print collected records as JSON
+                print("\n=== DRY-RUN OUTPUT ===")
+                import json
+                print(json.dumps({
+                    "deviceId": args.device_id,
+                    "records": all_records
+                }, indent=2))
+                print("=== END DRY-RUN ===\n")
+            elif all_records:
+                # Send batch to API
+                send_batch(args.api_url, args.device_id, all_records, api_key=ingest_key)
             else:
                 print("No records to send")
 
@@ -297,6 +346,10 @@ def main() -> None:
             break
         except Exception as e:
             print(f"Error during collection: {e}", file=sys.stderr)
+
+        # If dry-run, exit after one iteration
+        if args.dry_run:
+            break
 
         # Wait for next interval
         time.sleep(args.interval)
